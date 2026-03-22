@@ -10,7 +10,8 @@ from django.utils.encoding import force_bytes, force_str
 from django.contrib.auth.tokens import default_token_generator
 import requests
 
-from .models import Hall, Notification, Menu, Feedback
+from django.db.models import Sum
+from .models import Hall, Notification, Menu, Feedback, RebateApp, FixedCharges, MyBooking, DailyRebateRefund
 from .serializers import (
     SignupSerializer, 
     LoginSerializer, 
@@ -20,7 +21,9 @@ from .serializers import (
     UserProfileSerializer,
     NotificationSerializer,
     MenuSerializer,
-    FeedbackSerializer
+    FeedbackSerializer,
+    RebateAppSerializer,
+    MyBookingSerializer
 )
 
 User = get_user_model()
@@ -136,6 +139,139 @@ class FeedbackListView(APIView):
             serializer.save(user=request.user)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RebateAppListView(APIView):
+    """
+    API View to list and create Rebate Applications.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if getattr(request.user, 'role', '') == 'admin':
+            rebates = RebateApp.objects.all().order_by('-created_at', '-id')
+        else:
+            rebates = RebateApp.objects.filter(user=request.user).order_by('-created_at', '-id')
+        
+        serializer = RebateAppSerializer(rebates, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = RebateAppSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class MyBookingListView(APIView):
+    """
+    API View to list items booked by the authenticated user.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        bookings = MyBooking.objects.filter(user=request.user).select_related('booking__item').order_by('-booked_at')
+        serializer = MyBookingSerializer(bookings, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class MessBillView(APIView):
+    """
+    API View to calculate and return the Monthly Mess Bill.
+    Bill = MyBooking item costs + FixedCharges - Rebate refund.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def _get_rebate_days_for_month(self, user, month_str):
+        """
+        Calculate total rebate days for a user in a given month (e.g. 'March').
+        Assumes the current year. Finds all approved rebates that overlap with the calendar month.
+        """
+        import calendar
+        from datetime import date
+
+        year = date.today().year
+
+        try:
+            month_num = list(calendar.month_name).index(month_str)
+        except (ValueError, IndexError):
+            return 0
+
+        month_start = date(year, month_num, 1)
+        month_end = date(year, month_num, calendar.monthrange(year, month_num)[1])
+
+        approved_rebates = RebateApp.objects.filter(
+            user=user,
+            status='approved',
+            start_date__lte=month_end,
+            end_date__gte=month_start
+        )
+
+        total_days = 0
+        for rebate in approved_rebates:
+            overlap_start = max(rebate.start_date, month_start)
+            overlap_end = min(rebate.end_date, month_end)
+            total_days += (overlap_end - overlap_start).days + 1
+
+        return total_days
+
+    def get(self, request):
+        user = request.user
+        target_month = request.query_params.get('month')
+        
+        fixed_charges_qs = FixedCharges.objects.filter(user=user)
+        total_fixed_charges = fixed_charges_qs.aggregate(total=Sum('bill'))['total'] or 0
+        fixed_charges_list = list(fixed_charges_qs.values('hall__name', 'category', 'bill'))
+
+        bookings = MyBooking.objects.filter(user=user, status='confirmed').select_related('booking__item')
+        if target_month:
+            bookings = bookings.filter(booking__item__month=target_month)
+            
+        bills_by_month = {}
+        
+        for mb in bookings:
+            item = mb.booking.item
+            month = item.month
+            cost = mb.quantity * item.cost
+            
+            if month not in bills_by_month:
+                bills_by_month[month] = {"items": [], "total_item_cost": 0}
+                
+            bills_by_month[month]["items"].append({
+                "item_name": item.name,
+                "quantity": mb.quantity,
+                "cost_per_item": item.cost,
+                "total_cost": cost,
+                "date": mb.booked_at
+            })
+            bills_by_month[month]["total_item_cost"] += cost
+            
+        response_data = []
+        if target_month and target_month not in bills_by_month:
+            bills_by_month[target_month] = {"items": [], "total_item_cost": 0}
+
+        for month, data in bills_by_month.items():
+            # Calculate rebate refund for this month
+            rebate_days = self._get_rebate_days_for_month(user, month)
+            daily_refund_obj = DailyRebateRefund.objects.filter(month=month).first()
+            daily_refund_rate = daily_refund_obj.cost if daily_refund_obj else 0
+            rebate_refund = rebate_days * daily_refund_rate
+
+            total_bill = data["total_item_cost"] + total_fixed_charges - rebate_refund
+            response_data.append({
+                "month": month,
+                "total_item_cost": data["total_item_cost"],
+                "total_fixed_charges": total_fixed_charges,
+                "rebate_days": rebate_days,
+                "daily_refund_rate": daily_refund_rate,
+                "rebate_refund": rebate_refund,
+                "total_bill": total_bill,
+                "fixed_charges_details": fixed_charges_list,
+                "items_bought": data["items"]
+            })
+            
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 class SignupView(APIView):

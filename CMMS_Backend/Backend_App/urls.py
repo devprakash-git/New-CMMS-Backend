@@ -11,7 +11,10 @@ from .views import (
     MarkNotificationsSeenView,
     MenuListView,
     AuthStatusView,
-    FeedbackListView
+    FeedbackListView,
+    RebateAppListView,
+    MessBillView,
+    MyBookingListView
 )
 
 urlpatterns = [
@@ -22,6 +25,9 @@ urlpatterns = [
     path('notifications/', NotificationListView.as_view(), name='notifications'),
     path('notifications/mark-seen/', MarkNotificationsSeenView.as_view(), name='mark-notifications-seen'),
     path('feedbacks/', FeedbackListView.as_view(), name='feedbacks'),
+    path('rebates/', RebateAppListView.as_view(), name='rebates'),
+    path('mess-bill/', MessBillView.as_view(), name='mess-bill'),
+    path('my-bookings/', MyBookingListView.as_view(), name='my-bookings'),
     path('signup/', SignupView.as_view(), name='signup'),
     path('login/', LoginView.as_view(), name='login'),
     path('logout/', LogoutView.as_view(), name='logout'),

@@ -81,6 +81,7 @@ class Item(models.Model):
     name = models.CharField(max_length=255)
     hall = models.ForeignKey(Hall, on_delete=models.CASCADE, related_name='items')
     cost = models.DecimalField(max_digits=10, decimal_places=2)
+    month = models.CharField(max_length=20, default='Error')            # e.g. "March"
 
     def __str__(self):
         return f"{self.name} - {self.hall.name}"
@@ -89,15 +90,28 @@ class Item(models.Model):
 # Rebate Application
 # ──────────────────────────────────────────────
 class RebateApp(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='rebate_apps')
     # Replaced 'store_food' with actual leave dates as per handwritten diagram
     start_date = models.DateField()
     end_date = models.DateField()
     location = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
 
     def __str__(self):
         return f"Rebate #{self.pk} - {self.user.email}"
+
+class DailyRebateRefund(models.Model):
+    month = models.CharField(max_length=20, default='Error')            # e.g. "March"
+    cost = models.DecimalField(max_digits=10, decimal_places=2)
+
+    def __str__(self):
+        return f"Daily Rebate Refund - {self.month}"
 
 # ──────────────────────────────────────────────
 # Feedback / Complaint
@@ -221,18 +235,7 @@ class Menu(models.Model):
     def __str__(self):
         return f"{self.hall.name} - {self.day} {self.meal_time}: {self.dish}"
 
-# ──────────────────────────────────────────────
-# Mess Bill
-# ──────────────────────────────────────────────
-class MessBill(models.Model):
-    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='mess_bills')
-    month = models.CharField(max_length=20)               # e.g. "March 2026"
-    bill = models.DecimalField(max_digits=10, decimal_places=2)
-    hall = models.ForeignKey(Hall, on_delete=models.CASCADE, related_name='mess_bills')
-    category = models.CharField(max_length=100)
 
-    def __str__(self):
-        return f"MessBill - {self.user.email} / {self.month}"
 
 class Notification(models.Model):
     CATEGORY_CHOICES = [
@@ -254,3 +257,12 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"{self.title} - {self.user.name}"
+
+class FixedCharges(models.Model):
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='fixed_charges')
+    bill = models.DecimalField(max_digits=10, decimal_places=2)
+    hall = models.ForeignKey(Hall, on_delete=models.CASCADE, related_name='fixed_charges')
+    category = models.CharField(max_length=100)
+
+    def __str__(self):
+        return f"FixedCharges - {self.user.email} / {self.hall.name}" 

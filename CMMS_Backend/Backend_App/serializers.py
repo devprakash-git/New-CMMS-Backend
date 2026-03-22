@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model, authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.exceptions import AuthenticationFailed
 
-from .models import Hall, Notification, Menu, Feedback
+from .models import Hall, Notification, Menu, Feedback, RebateApp, MyBooking
 
 User = get_user_model()
 
@@ -41,6 +41,15 @@ class FeedbackSerializer(serializers.ModelSerializer):
         fields = ['id', 'user', 'user_name', 'user_email', 'category', 'date', 'status', 'content']
         read_only_fields = ['id', 'user', 'date', 'status']
 
+
+class RebateAppSerializer(serializers.ModelSerializer):
+    user_name = serializers.CharField(source='user.name', read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+
+    class Meta:
+        model = RebateApp
+        fields = ['id', 'user', 'user_name', 'user_email', 'start_date', 'end_date', 'location', 'created_at', 'status']
+        read_only_fields = ['id', 'user', 'created_at', 'status']
 
 class SignupSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
@@ -135,3 +144,14 @@ class ResetPasswordSerializer(serializers.Serializer):
         if new_pw != confirm_pw:
             raise serializers.ValidationError({"password": "Password fields didn't match."})
         return attrs
+
+
+class MyBookingSerializer(serializers.ModelSerializer):
+    item_name = serializers.CharField(source='booking.item.name', read_only=True)
+    item_cost = serializers.DecimalField(source='booking.item.cost', max_digits=10, decimal_places=2, read_only=True)
+    month = serializers.CharField(source='booking.item.month', read_only=True)
+
+    class Meta:
+        model = MyBooking
+        fields = ['id', 'item_name', 'item_cost', 'month', 'quantity', 'status', 'booked_at', 'qr_code_id']
+
