@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model, authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.exceptions import AuthenticationFailed
 
-from .models import Hall, Notification, Menu, Feedback, RebateApp, MyBooking
+from .models import Hall, Notification, Menu, Feedback, RebateApp, MyBooking, Booking, Cart
 
 User = get_user_model()
 
@@ -155,3 +155,34 @@ class MyBookingSerializer(serializers.ModelSerializer):
         model = MyBooking
         fields = ['id', 'item_name', 'item_cost', 'month', 'quantity', 'status', 'booked_at', 'qr_code_id']
 
+class BookingSerializer(serializers.ModelSerializer):
+    item_name = serializers.CharField(source='item.name', read_only=True)
+    item_cost = serializers.DecimalField(source='item.cost', max_digits=10, decimal_places=2, read_only=True)
+    hall_name = serializers.CharField(source='hall.name', read_only=True)
+
+    class Meta:
+        model = Booking
+        fields = ['id', 'item', 'item_name', 'item_cost', 'hall', 'hall_name', 'day_and_time', 'available_count']
+
+class CartSerializer(serializers.ModelSerializer):
+    item_name = serializers.CharField(source='item.name', read_only=True)
+    item_cost = serializers.DecimalField(source='item.cost', max_digits=10, decimal_places=2, read_only=True)
+    available_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Cart
+        fields = ['id', 'item', 'item_name', 'item_cost', 'quantity', 'available_count']
+
+    def get_available_count(self, obj):
+        from .models import Booking
+        user = obj.user
+        user_hall = user.hall_of_residence
+        
+        bookings = Booking.objects.filter(item=obj.item)
+        if user_hall:
+            hall_bookings = bookings.filter(hall=user_hall)
+            if hall_bookings.exists():
+                bookings = hall_bookings
+        
+        booking = bookings.order_by('day_and_time').first()
+        return booking.available_count if booking else 0

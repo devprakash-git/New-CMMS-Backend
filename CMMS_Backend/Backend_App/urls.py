@@ -15,7 +15,13 @@ from .views import (
     RebateAppListView,
     MessBillView,
     MessBillPDFView,
-    MyBookingListView
+    MyBookingListView,
+    BookingListView,
+    CartAddView,
+    CartCheckView,
+    CartCheckoutView,
+    CartDeleteView,
+    CustomTokenRefreshView
 )
 
 urlpatterns = [
@@ -29,9 +35,15 @@ urlpatterns = [
     path('rebates/', RebateAppListView.as_view(), name='rebates'),
     path('mess-bill/', MessBillView.as_view(), name='mess-bill'),
     path('mess-bill/pdf/', MessBillPDFView.as_view(), name='mess-bill-pdf'),
+    path('cart/add/', CartAddView.as_view(), name='cart-add'),
+    path('cart/check/', CartCheckView.as_view(), name='cart-check'),
+    path('cart/checkout/', CartCheckoutView.as_view(), name='cart-checkout'),
+    path('cart/delete/', CartDeleteView.as_view(), name='cart-delete'),
+    path('bookings/', BookingListView.as_view(), name='bookings'),
     path('my-bookings/', MyBookingListView.as_view(), name='my-bookings'),
     path('signup/', SignupView.as_view(), name='signup'),
     path('login/', LoginView.as_view(), name='login'),
+    path('auth/refresh/', CustomTokenRefreshView.as_view(), name='token_refresh'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
     path('reset-password/<uidb64>/<token>/', ResetPasswordTemplateView.as_view(), name='reset-password'),

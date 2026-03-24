@@ -14,7 +14,7 @@ import uuid
 import io
 
 from django.db.models import Sum
-from .models import Hall, Notification, Menu, Feedback, RebateApp, FixedCharges, MyBooking, DailyRebateRefund, BillVerification
+from .models import Hall, Notification, Menu, Feedback, RebateApp, FixedCharges, MyBooking, DailyRebateRefund, BillVerification, Booking, Cart, Item
 from .serializers import (
     SignupSerializer, 
     LoginSerializer, 
@@ -26,7 +26,9 @@ from .serializers import (
     MenuSerializer,
     FeedbackSerializer,
     RebateAppSerializer,
-    MyBookingSerializer
+    MyBookingSerializer,
+    BookingSerializer,
+    CartSerializer
 )
 
 User = get_user_model()
@@ -177,6 +179,229 @@ class MyBookingListView(APIView):
         bookings = MyBooking.objects.filter(user=request.user).select_related('booking__item').order_by('-booked_at')
         serializer = MyBookingSerializer(bookings, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class BookingListView(APIView):
+    """
+    API View to return a list of available bookings.
+    Filters out bookings with 0 available count.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        hall_id = request.query_params.get('hall_id')
+        
+        # Only show bookings where available_count > 0
+        bookings = Booking.objects.filter(available_count__gt=0).select_related('item', 'hall').order_by('day_and_time')
+        
+        if hall_id:
+            bookings = bookings.filter(hall_id=hall_id)
+        elif getattr(request.user, 'hall_of_residence', None):
+            bookings = bookings.filter(hall=request.user.hall_of_residence)
+            
+        serializer = BookingSerializer(bookings, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class CartAddView(APIView):
+    """
+    API View to add an item to the cart or update its quantity.
+    Expected payload: {"item_id": 1, "quantity": 2}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        item_id = request.data.get('item_id')
+        quantity = request.data.get('quantity', 1)
+        
+        try:
+            quantity = int(quantity)
+            if quantity <= 0:
+                return Response({"error": "Quantity must be greater than 0."}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError:
+            return Response({"error": "Invalid quantity."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            item = Item.objects.get(id=item_id)
+        except Item.DoesNotExist:
+            return Response({"error": "Item not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Retrieve user's hall
+        user_hall = getattr(request.user, 'hall_of_residence', None)
+        
+        # Check available booking for this item
+        bookings = Booking.objects.filter(item=item)
+        if user_hall:
+            hall_bookings = bookings.filter(hall=user_hall)
+            if hall_bookings.exists():
+                bookings = hall_bookings
+        
+        booking = bookings.order_by('day_and_time').first()
+        if not booking:
+            return Response({"error": "Item is not currently available for booking."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Calculate new total quantity
+        cart_item = Cart.objects.filter(user=request.user, item=item).first()
+        current_quantity = cart_item.quantity if cart_item else 0
+        new_quantity = current_quantity + quantity
+        
+        if new_quantity > booking.available_count:
+            return Response({
+                "error": "Limit reached",
+                "message": f"Cannot add more. Only {booking.available_count} available, and you already have {current_quantity} in cart."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not cart_item:
+            # We create a new cart item if it doesn't exist
+            cart_item = Cart.objects.create(user=request.user, item=item, quantity=quantity)
+        else:
+            # Otherwise we update the quantity of the existing one
+            cart_item.quantity = new_quantity
+            cart_item.save()
+            
+        return Response({
+            "message": "Item added to cart.", 
+            "cart_item_id": cart_item.id, 
+            "quantity": cart_item.quantity
+        }, status=status.HTTP_200_OK)
+
+
+class CartDeleteView(APIView):
+    """
+    API View to delete an item from the cart.
+    Expected payload: {"item_id": 1}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        item_id = request.data.get('item_id')
+        try:
+            cart_item = Cart.objects.get(user=request.user, item_id=item_id)
+            if cart_item.quantity > 1:
+                cart_item.quantity -= 1
+                cart_item.save()
+                return Response({"message": "Quantity decreased.", "quantity": cart_item.quantity}, status=status.HTTP_200_OK)
+            else:
+                cart_item.delete()
+                return Response({"message": "Item removed from cart."}, status=status.HTTP_200_OK)
+        except Cart.DoesNotExist:
+            return Response({"error": "Item not in cart."}, status=status.HTTP_404_NOT_FOUND)
+
+
+class CartCheckView(APIView):
+    """
+    API View to check all cart items against Booking availability.
+    Adjusts cart item quantities if they exceed Booking available_count or if Booking doesn't exist.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        cart_items = Cart.objects.filter(user=request.user)
+        user_hall = request.user.hall_of_residence
+        changes_made = []
+
+        for cart_item in cart_items:
+            bookings = Booking.objects.filter(item=cart_item.item)
+            if user_hall:
+                hall_bookings = bookings.filter(hall=user_hall)
+                if hall_bookings.exists():
+                    bookings = hall_bookings
+            
+            booking = bookings.order_by('day_and_time').first()
+            
+            if not booking:
+                changes_made.append({
+                    "item": cart_item.item.name, 
+                    "message": "Item not available. Removed from cart."
+                })
+                cart_item.delete()
+                continue
+                
+            if cart_item.quantity > booking.available_count:
+                if booking.available_count == 0:
+                    changes_made.append({
+                        "item": cart_item.item.name, 
+                        "message": "Item out of stock. Removed from cart."
+                    })
+                    cart_item.delete()
+                else:
+                    changes_made.append({
+                        "item": cart_item.item.name, 
+                        "message": f"Only {booking.available_count} available. Reduced from {cart_item.quantity} to {booking.available_count}."
+                    })
+                    cart_item.quantity = booking.available_count
+                    cart_item.save()
+
+        updated_cart = Cart.objects.filter(user=request.user)
+        serializer = CartSerializer(updated_cart, many=True)
+        return Response({
+            "cart": serializer.data,
+            "changes": changes_made
+        }, status=status.HTTP_200_OK)
+
+
+class CartCheckoutView(APIView):
+    """
+    API View to confirm booking from cart.
+    Deducts available_count from Booking and creates MyBooking records.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        cart_items = Cart.objects.filter(user=request.user)
+        if not cart_items.exists():
+            return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_hall = request.user.hall_of_residence
+        checkout_data = []
+
+        from django.db import transaction
+        import uuid
+
+        with transaction.atomic():
+            for cart_item in cart_items:
+                # Lock the relevant bookings to prevent concurrent overselling
+                bookings = Booking.objects.select_for_update().filter(item=cart_item.item)
+                if user_hall:
+                    hall_bookings = bookings.filter(hall=user_hall)
+                    if hall_bookings.exists():
+                        bookings = hall_bookings
+                
+                booking = bookings.filter(available_count__gte=cart_item.quantity).order_by('day_and_time').first()
+
+                if not booking:
+                    booking = bookings.order_by('day_and_time').first()
+                    if not booking or booking.available_count < cart_item.quantity:
+                        return Response({
+                            "error": f"Insufficient availability for {cart_item.item.name}. Please check cart again."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                booking.available_count -= cart_item.quantity
+                booking.save()
+
+                unique_qr = f"QR-{uuid.uuid4().hex[:12].upper()}"
+
+                my_booking = MyBooking.objects.create(
+                    user=request.user,
+                    booking=booking,
+                    qr_code_id=unique_qr,
+                    quantity=cart_item.quantity,
+                    status='confirmed'
+                )
+
+                checkout_data.append({
+                    "item": cart_item.item.name,
+                    "quantity": cart_item.quantity,
+                    "booking_id": my_booking.id,
+                    "qr_code_id": unique_qr
+                })
+
+            cart_items.delete()
+
+        return Response({
+            "message": "Checkout successful. Bookings confirmed.", 
+            "details": checkout_data
+        }, status=status.HTTP_200_OK)
 
 
 class MessBillView(APIView):
@@ -549,6 +774,56 @@ class LoginView(APIView):
             return response
             
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CustomTokenRefreshView(APIView):
+    """
+    API View to refresh an access token using the HttpOnly refresh_token cookie.
+    If valid, it sets a new access_token cookie.
+    """
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh_token = request.COOKIES.get('refresh_token')
+
+        if not refresh_token:
+            return Response({"error": "No refresh token provided"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            from rest_framework_simplejwt.tokens import RefreshToken
+            refresh = RefreshToken(refresh_token)
+            new_access_token = str(refresh.access_token)
+
+            response = Response({"message": "Token refreshed successfully"}, status=status.HTTP_200_OK)
+
+            response.set_cookie(
+                key=settings.SIMPLE_JWT.get('AUTH_COOKIE', 'access_token'),
+                value=new_access_token,
+                expires=settings.SIMPLE_JWT.get('ACCESS_TOKEN_LIFETIME', 0),
+                secure=settings.SIMPLE_JWT.get('AUTH_COOKIE_SECURE', False),
+                httponly=True,
+                samesite=settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax')
+            )
+
+            # If token rotation is enabled, simplejwt might also give a new refresh token.
+            # Usually simple jwt refresh endpoint takes care of this via its own view. 
+            # Doing it manually if needed:
+            if settings.SIMPLE_JWT.get("ROTATE_REFRESH_TOKENS", False):
+                new_refresh_token = str(refresh)
+                response.set_cookie(
+                    key="refresh_token",
+                    value=new_refresh_token,
+                    expires=settings.SIMPLE_JWT.get('REFRESH_TOKEN_LIFETIME', 0),
+                    secure=settings.SIMPLE_JWT.get('AUTH_COOKIE_SECURE', False),
+                    httponly=True,
+                    samesite=settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax')
+                )
+
+            return response
+        except Exception as e:
+            return Response({"error": "Invalid or expired refresh token"}, status=status.HTTP_401_UNAUTHORIZED)
+
 
 
 class LogoutView(APIView):

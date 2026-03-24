@@ -2,11 +2,14 @@ from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
 from django.utils import timezone
 from datetime import timedelta
+from django.utils import timezone
+from datetime import timedelta
 
-# Helper for cart expiry
 def get_cart_expiry():
-    return timezone.now() + timedelta(minutes=15)
-
+    return timezone.now() + timedelta(days=7)
+# ──────────────────────────────────────────────
+# User Manager ────────────────────────────────
+# ──────────────────────────────────────────────
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, name, password=None, **extra_fields):
         if not email:
@@ -139,7 +142,6 @@ class Cart(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='cart_items')
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name='cart_entries')
     quantity = models.PositiveIntegerField(default=1)
-    expires_at = models.DateTimeField(default=get_cart_expiry)
 
     class Meta:
         unique_together = ('user', 'item')
@@ -148,10 +150,6 @@ class Cart(models.Model):
     def __str__(self):
         return f"Cart - {self.user.email} / {self.item.name} (x{self.quantity})"
 
-    # For the shopping logic
-    def refresh_expiry(self):
-        self.expires_at = get_cart_expiry()
-        self.save()
 
 # ──────────────────────────────────────────────
 # Booking  (Inventory / Availability Slot)
