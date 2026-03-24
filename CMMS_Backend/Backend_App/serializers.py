@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model, authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.exceptions import AuthenticationFailed
 
-from .models import Hall, Notification, Menu, Feedback, RebateApp, MyBooking, Booking, Cart
+from .models import Hall, Notification, Menu, Feedback, RebateApp, MyBooking, Booking, Cart, DailyRebateRefund
 
 User = get_user_model()
 
@@ -186,3 +186,8 @@ class CartSerializer(serializers.ModelSerializer):
         
         booking = bookings.order_by('day_and_time').first()
         return booking.available_count if booking else 0
+
+class DailyRebateRefundSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DailyRebateRefund
+        fields = ['id', 'month', 'cost']

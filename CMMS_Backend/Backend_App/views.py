@@ -28,7 +28,8 @@ from .serializers import (
     RebateAppSerializer,
     MyBookingSerializer,
     BookingSerializer,
-    CartSerializer
+    CartSerializer,
+    DailyRebateRefundSerializer
 )
 
 User = get_user_model()
@@ -832,6 +833,38 @@ class LogoutView(APIView):
         response.delete_cookie(settings.SIMPLE_JWT.get('AUTH_COOKIE', 'access_token'))
         response.delete_cookie("refresh_token")
         return response
+
+
+class DailyRebateRefundListView(APIView):
+    """
+    API View to list and create/update Daily Rebate Refunds.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        rebates = DailyRebateRefund.objects.all().order_by('month')
+        serializer = DailyRebateRefundSerializer(rebates, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        if getattr(request.user, 'role', '') != 'admin':
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+        
+        month = request.data.get('month')
+        cost = request.data.get('cost')
+        
+        if not month or cost is None:
+            return Response({"error": "Month and cost are required."}, status=status.HTTP_400_BAD_REQUEST)
+            
+        rebate_obj, created = DailyRebateRefund.objects.update_or_create(
+            month=month,
+            defaults={'cost': cost}
+        )
+        
+        serializer = DailyRebateRefundSerializer(rebate_obj)
+        if created:
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class ForgotPasswordView(APIView):

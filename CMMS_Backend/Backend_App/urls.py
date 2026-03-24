@@ -21,7 +21,8 @@ from .views import (
     CartCheckView,
     CartCheckoutView,
     CartDeleteView,
-    CustomTokenRefreshView
+    CustomTokenRefreshView,
+    DailyRebateRefundListView
 )
 
 urlpatterns = [
@@ -39,6 +40,7 @@ urlpatterns = [
     path('cart/check/', CartCheckView.as_view(), name='cart-check'),
     path('cart/checkout/', CartCheckoutView.as_view(), name='cart-checkout'),
     path('cart/delete/', CartDeleteView.as_view(), name='cart-delete'),
+    path('daily-rebate-refund/', DailyRebateRefundListView.as_view(), name='daily-rebate-refund'),
     path('bookings/', BookingListView.as_view(), name='bookings'),
     path('my-bookings/', MyBookingListView.as_view(), name='my-bookings'),
     path('signup/', SignupView.as_view(), name='signup'),
