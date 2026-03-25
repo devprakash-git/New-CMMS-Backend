@@ -186,7 +186,7 @@ class MyBooking(models.Model):
     
     # Added quantity and status for order management
     quantity = models.PositiveIntegerField(default=1)
-    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='confirmed')
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='confirmed-not-scanned')
     booked_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

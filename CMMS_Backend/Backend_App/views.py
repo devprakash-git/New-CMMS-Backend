@@ -12,6 +12,8 @@ from django.contrib.auth.tokens import default_token_generator
 import requests
 import uuid
 import io
+from django.utils import timezone
+import calendar
 
 from django.db.models import Sum
 from .models import Hall, Notification, Menu, Feedback, RebateApp, FixedCharges, MyBooking, DailyRebateRefund, BillVerification, Booking, Cart, Item, BillPaymentStatus
@@ -523,7 +525,7 @@ class CartCheckoutView(APIView):
                     booking=booking,
                     qr_code_id=unique_qr,
                     quantity=cart_item.quantity,
-                    status='confirmed'
+                    status='confirmed-not-scanned'
                 )
 
                 checkout_data.append({
@@ -589,7 +591,7 @@ class MessBillView(APIView):
         total_fixed_charges = fixed_charges_qs.aggregate(total=Sum('bill'))['total'] or 0
         fixed_charges_list = list(fixed_charges_qs.values('hall__name', 'category', 'bill'))
 
-        bookings = MyBooking.objects.filter(user=user, status='confirmed').select_related('booking__item')
+        bookings = MyBooking.objects.filter(user=user, status__icontains='confirmed').select_related('booking__item')
         if target_month:
             bookings = bookings.filter(booking__item__month=target_month)
             
@@ -714,7 +716,7 @@ class AdminBillingView(APIView):
 
             # Extras (MyBooking items)
             bookings_qs = MyBooking.objects.filter(
-                user=student, status='confirmed'
+                user=student, status__icontains='confirmed'
             ).select_related('booking__item')
             if target_month:
                 bookings_qs = bookings_qs.filter(booking__item__month=target_month)
@@ -920,7 +922,7 @@ class MessBillPDFView(APIView):
         fixed_charges_list = list(fixed_charges_qs.values('category', 'bill'))
 
         bookings = MyBooking.objects.filter(
-            user=user, status='confirmed',
+            user=user, status__icontains='confirmed',
             booking__item__month=target_month
         ).select_related('booking__item')
 
@@ -1458,8 +1460,10 @@ class AdminExtrasItemView(APIView):
         except Hall.DoesNotExist:
             return Response({"error": "Hall not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        from django.utils import timezone
-        item = Item.objects.create(name=name, cost=price, hall=hall)
+        now = timezone.now()
+        current_month = list(calendar.month_name)[now.month]
+
+        item = Item.objects.create(name=name, cost=price, hall=hall, month=current_month)
         Booking.objects.create(item=item, hall=hall, available_count=stock, day_and_time=timezone.now())
 
         return Response({"message": "Item created"}, status=status.HTTP_201_CREATED)
