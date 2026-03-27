@@ -14,6 +14,7 @@ import uuid
 import io
 from django.utils import timezone
 import calendar
+from dataclasses import dataclass
 
 from django.db.models import Sum
 from .models import Hall, Notification, Menu, Feedback, RebateApp, FixedCharges, MyBooking, DailyRebateRefund, BillVerification, Booking, Cart, Item, BillPaymentStatus
@@ -1510,4 +1511,162 @@ class AdminExtrasItemView(APIView):
             return Response({"error": "Item not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
+class AdminSendNotificationView(APIView):
+    """Admin-only: Send custom notifications to a student or multiple students."""
+    permission_classes = [IsAuthenticated]
 
+    def post(self, request):
+        if getattr(request.user, 'role', '') != 'admin':
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        payload = AdminNotificationPayload(
+            title=request.data.get('title', '').strip(),
+            content=request.data.get('content', '').strip(),
+            all_students=request.data.get('all_students', False),
+            user_ids=request.data.get('user_ids', []),
+            emails=request.data.get('emails', []),
+            roll_nos=request.data.get('roll_nos', []),
+        )
+
+        if not payload.title or not payload.content:
+            return Response({"error": "Title and content are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .models import CustomUser
+
+        targets = CustomUser.objects.filter(role='student')
+
+        if not payload.all_students:
+            if payload.user_ids and not isinstance(payload.user_ids, list):
+                return Response({"error": "user_ids must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+            if payload.emails and isinstance(payload.emails, str):
+                payload.emails = [email.strip() for email in payload.emails.split(',') if email.strip()]
+            if payload.roll_nos and isinstance(payload.roll_nos, str):
+                payload.roll_nos = [roll.strip() for roll in payload.roll_nos.split(',') if roll.strip()]
+
+            if payload.emails and not isinstance(payload.emails, list):
+                return Response({"error": "emails must be a list or comma-separated string."}, status=status.HTTP_400_BAD_REQUEST)
+            if payload.roll_nos and not isinstance(payload.roll_nos, list):
+                return Response({"error": "roll_nos must be a list or comma-separated string."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if not (payload.user_ids or payload.emails or payload.roll_nos):
+                return Response({"error": "Must provide all_students:true or at least one of user_ids / emails / roll_nos."}, status=status.HTTP_400_BAD_REQUEST)
+
+            q = CustomUser.objects.filter(role='student')
+            if payload.user_ids:
+                q = q.filter(id__in=payload.user_ids)
+            if payload.emails:
+                q = q.filter(email__in=payload.emails)
+            if payload.roll_nos:
+                q = q.filter(roll_no__in=payload.roll_nos)
+
+            targets = q
+
+        created = 0
+        for student in targets.distinct():
+            Notification.objects.create(
+                user=student,
+                title=payload.title,
+                content=payload.content,
+                category='unseen'
+            )
+            created += 1
+
+        if created == 0:
+            return Response({"error": "No matching student recipients found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "message": f"Notification sent to {created} student(s).",
+            "sent_count": created
+        }, status=status.HTTP_200_OK)
+
+class AdminStudentListView(APIView):
+    """Admin-only: Get student list for targeted notifications."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if getattr(request.user, 'role', '') != 'admin':
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        from .models import CustomUser
+        students = CustomUser.objects.filter(role='student').order_by('name')
+        serializer = UserProfileSerializer(students, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@dataclass
+class AdminNotificationPayload:
+    title: str
+    content: str
+    all_students: bool = False
+    user_ids: list = None
+    emails: list = None
+    roll_nos: list = None
+
+
+class AdminSendNotificationView(APIView):
+    """Admin-only: Send custom notifications to a student or multiple students."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if getattr(request.user, 'role', '') != 'admin':
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        payload = AdminNotificationPayload(
+            title=request.data.get('title', '').strip(),
+            content=request.data.get('content', '').strip(),
+            all_students=request.data.get('all_students', False),
+            user_ids=request.data.get('user_ids', []),
+            emails=request.data.get('emails', []),
+            roll_nos=request.data.get('roll_nos', []),
+        )
+
+        if not payload.title or not payload.content:
+            return Response({"error": "Title and content are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .models import CustomUser
+
+        targets = CustomUser.objects.filter(role='student')
+
+        if not payload.all_students:
+            if payload.user_ids and not isinstance(payload.user_ids, list):
+                return Response({"error": "user_ids must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+            if payload.emails and isinstance(payload.emails, str):
+                payload.emails = [email.strip() for email in payload.emails.split(',') if email.strip()]
+            if payload.roll_nos and isinstance(payload.roll_nos, str):
+                payload.roll_nos = [roll.strip() for roll in payload.roll_nos.split(',') if roll.strip()]
+
+            if payload.emails and not isinstance(payload.emails, list):
+                return Response({"error": "emails must be a list or comma-separated string."}, status=status.HTTP_400_BAD_REQUEST)
+            if payload.roll_nos and not isinstance(payload.roll_nos, list):
+                return Response({"error": "roll_nos must be a list or comma-separated string."}, status=status.HTTP_400_BAD_REQUEST)
+
+            if not (payload.user_ids or payload.emails or payload.roll_nos):
+                return Response({"error": "Must provide all_students:true or at least one of user_ids / emails / roll_nos."}, status=status.HTTP_400_BAD_REQUEST)
+
+            q = CustomUser.objects.filter(role='student')
+            if payload.user_ids:
+                q = q.filter(id__in=payload.user_ids)
+            if payload.emails:
+                q = q.filter(email__in=payload.emails)
+            if payload.roll_nos:
+                q = q.filter(roll_no__in=payload.roll_nos)
+
+            targets = q
+
+        created = 0
+        for student in targets.distinct():
+            Notification.objects.create(
+                user=student,
+                title=payload.title,
+                content=payload.content,
+                category='unseen'
+            )
+            created += 1
+
+        if created == 0:
+            return Response({"error": "No matching student recipients found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "message": f"Notification sent to {created} student(s).",
+            "sent_count": created
+        }, status=status.HTTP_200_OK)

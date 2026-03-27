@@ -32,12 +32,14 @@ from .views import (
     AdminRebateStatusUpdateView,
     FixedChargesListView,
     AdminMenuUpdateView,
-    AdminMenuDeleteView
+    AdminMenuDeleteView,
+    AdminSendNotificationView,
+    AdminStudentListView,
 )
 
 urlpatterns = [
-    path('my/', AuthStatusView.as_view(), name='my'),
-    path('menu/', MenuListView.as_view(), name='menu'),
+    path('my/', AuthStatusView.as_view(), name='my'), 
+    path('menu/', MenuListView.as_view(), name='menu'), 
     path('halls/', HallListView.as_view(), name='halls'),
     path('profile/', UserProfileView.as_view(), name='profile'),
     path('notifications/', NotificationListView.as_view(), name='notifications'),
@@ -54,6 +56,8 @@ urlpatterns = [
     path('admin/billing/', AdminBillingView.as_view(), name='admin-billing'),
     path('admin/billing/update-status/', AdminBillStatusUpdateView.as_view(), name='admin-billing-update-status'),
     path('admin/billing/send-reminder/', AdminSendReminderView.as_view(), name='admin-billing-send-reminder'),
+    path('admin/notifications/send/', AdminSendNotificationView.as_view(), name='admin-notifications-send'),
+    path('admin/notifications/students/', AdminStudentListView.as_view(), name='admin-notifications-students'),
     path('admin/feedbacks/update-status/', AdminFeedbackStatusUpdateView.as_view(), name='admin_feedback_update_status'),
     path('admin/rebates/update-status/', AdminRebateStatusUpdateView.as_view(), name='admin_rebate_update_status'),
     path('admin/menu/update/', AdminMenuUpdateView.as_view(), name='admin_menu_update'),
