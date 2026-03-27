@@ -71,9 +71,9 @@ poetry run python CMMS_Backend/manage.py createsuperuser
 
 ### 6. Start the Development Server
 ```bash
-poetry run python CMMS_Backend/manage.py runserver
+poetry run python CMMS_Backend/manage.py runserver localhost:8000
 ```
-The API will be available at `http://127.0.0.1:8000/`.
+The API will be available at `http://localhost:8000/`.
 
 ## Project Structure
 
