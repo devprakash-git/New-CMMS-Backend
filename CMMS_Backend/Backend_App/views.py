@@ -633,6 +633,8 @@ class MessBillView(APIView):
         return total_days
 
     def get(self, request):
+        import calendar
+        from datetime import date
         user = request.user
         target_month = request.query_params.get('month')
         
@@ -641,14 +643,28 @@ class MessBillView(APIView):
         fixed_charges_list = list(fixed_charges_qs.values('hall__name', 'category', 'bill'))
 
         bookings = MyBooking.objects.filter(user=user, status__icontains='confirmed').select_related('booking__item')
+
+        # Filter by the actual booking date (booked_at) rather than item.month string
+        # This avoids mismatches when item.month is 'Error' or has different casing
         if target_month:
-            bookings = bookings.filter(booking__item__month=target_month)
+            try:
+                month_num = list(calendar.month_name).index(target_month)  # 1-12
+                current_year = date.today().year
+                bookings = bookings.filter(
+                    booked_at__year=current_year,
+                    booked_at__month=month_num
+                )
+            except (ValueError, IndexError):
+                pass
             
         bills_by_month = {}
         
         for mb in bookings:
             item = mb.booking.item
-            month = item.month
+            # Use the item's declared month if available, else derive from booked_at
+            month = item.month if (item.month and item.month != 'Error') else (
+                mb.booked_at.strftime("%B") if mb.booked_at else target_month or 'Unknown'
+            )
             cost = mb.quantity * item.cost
             
             if month not in bills_by_month:
@@ -768,7 +784,15 @@ class AdminBillingView(APIView):
                 user=student, status__icontains='confirmed'
             ).select_related('booking__item')
             if target_month:
-                bookings_qs = bookings_qs.filter(booking__item__month=target_month)
+                try:
+                    import calendar as cal
+                    month_num = list(cal.month_name).index(target_month)
+                    bookings_qs = bookings_qs.filter(
+                        booked_at__year=date.today().year,
+                        booked_at__month=month_num
+                    )
+                except (ValueError, IndexError):
+                    pass
 
             extras = []
             total_extras = 0

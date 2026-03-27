@@ -2,8 +2,13 @@ from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
 from django.utils import timezone
 from datetime import timedelta
-from django.utils import timezone
-from datetime import timedelta
+import calendar as _calendar
+import datetime as _datetime
+
+
+def current_month_name():
+    """Returns the current month name, e.g. 'March'. Used as a model field default."""
+    return _datetime.date.today().strftime("%B")
 
 def get_cart_expiry():
     return timezone.now() + timedelta(days=7)
@@ -84,7 +89,7 @@ class Item(models.Model):
     name = models.CharField(max_length=255)
     hall = models.ForeignKey(Hall, on_delete=models.CASCADE, related_name='items')
     cost = models.DecimalField(max_digits=10, decimal_places=2)
-    month = models.CharField(max_length=20, default='Error')            # e.g. "March"
+    month = models.CharField(max_length=20, default=current_month_name)  # e.g. "March"
 
     def __str__(self):
         return f"{self.name} - {self.hall.name}"
@@ -110,7 +115,7 @@ class RebateApp(models.Model):
         return f"Rebate #{self.pk} - {self.user.email}"
 
 class DailyRebateRefund(models.Model):
-    month = models.CharField(max_length=20, default='Error')            # e.g. "March"
+    month = models.CharField(max_length=20, default=current_month_name)  # e.g. "March"
     cost = models.DecimalField(max_digits=10, decimal_places=2)
 
     def __str__(self):
