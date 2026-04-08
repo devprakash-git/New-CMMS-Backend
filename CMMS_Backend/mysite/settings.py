@@ -165,7 +165,7 @@ STORAGES = {
     },
     "staticfiles": {
         # Changed from CompressedManifestStaticFilesStorage to stop the crash
-        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
 
