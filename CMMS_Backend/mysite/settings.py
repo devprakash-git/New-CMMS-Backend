@@ -174,7 +174,7 @@ STORAGES = {
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Fallback to localhost if env var is missing
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").split(",")
 
 CORS_ALLOWED_ORIGINS = [
     FRONTEND_URL,
@@ -188,9 +188,9 @@ CORS_ALLOW_CREDENTIALS = True
 
 # --- Security & Cookies ---
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-SECURE_SSL_REDIRECT = os.getenv("DEBUG", "False") != "True" # Force HTTPS in Prod
-SESSION_COOKIE_SECURE = SECURE_SSL_REDIRECT
-CSRF_COOKIE_SECURE = SECURE_SSL_REDIRECT
+SECURE_SSL_REDIRECT = False # Force HTTPS in Prod
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
 
 
 # If frontend and backend are on different domains (e.g., Vercel vs Railway)
