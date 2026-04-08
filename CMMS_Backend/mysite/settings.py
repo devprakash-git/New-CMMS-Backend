@@ -200,7 +200,7 @@ CSRF_COOKIE_SECURE = True
 # you often need SameSite='None' for cookies to work.
 # Note: 'None' requires Secure=True (HTTPS).
 SESSION_COOKIE_SAMESITE = 'None'
-CSRF_COOKIE_SAMESITE = 'None' 
+CSRF_COOKIE_SAMESITE = 'None'
 
 #----------------------------For password Rest emails --------------------------------------
 # Using Brevo API Instead of SMTP
