@@ -1418,7 +1418,7 @@ class TestAdminQRScanView:
         Unit Name: AdminQRScanView POST — already scanned
         Unit Details: Class AdminQRScanView, function post
         Test Date: 04/03/2026 - 04/03/2026
-        Test Results: Returns 200 with status='already_scanned' on second scan.
+        Test Results: Returns 409 Conflict with status='already_scanned' on second scan.
         Structural Coverage: Branch coverage — already_scanned path.
         Additional Comments: None.
         """
@@ -1427,7 +1427,7 @@ class TestAdminQRScanView:
         resp = admin_client.post(reverse("admin-qr-scan"), {
             "qr_code": qr_code.code,
         })
-        assert resp.status_code == status.HTTP_200_OK
+        assert resp.status_code == status.HTTP_409_CONFLICT
         assert resp.data["status"] == "already_scanned"
 
     @pytest.mark.django_db

@@ -168,9 +168,9 @@ class TestCartToBookingPipeline:
         assert my_booking.status == "confirmed-scanned"
         assert Notification.objects.filter(user=student).exists()
 
-        # ── Step 6: Re-scan returns already_scanned ──
+        # ── Step 6: Re-scan returns already_scanned with 409 Conflict ──
         resp = admin_client.post(reverse("admin-qr-scan"), {"qr_code": qr_code_value})
-        assert resp.status_code == status.HTTP_200_OK
+        assert resp.status_code == status.HTTP_409_CONFLICT
         assert resp.data["status"] == "already_scanned"
 
 

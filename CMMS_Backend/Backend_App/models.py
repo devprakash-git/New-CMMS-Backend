@@ -171,6 +171,12 @@ class Booking(models.Model):
     class Meta:
         # Prevents duplicate availability slots for the same item/time/hall
         unique_together = ('item', 'hall', 'day_and_time')
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(available_count__gte=0),
+                name='booking_available_count_non_negative',
+            ),
+        ]
     
     def __str__(self):
         return f"Slot #{self.pk} - {self.item.name} (Avail: {self.available_count})"
