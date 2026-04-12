@@ -5,6 +5,7 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from .permissions import IsAdminRole
 from django.contrib.auth import get_user_model
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
@@ -120,12 +121,9 @@ class AdminMenuUpdateView(APIView):
     """
     API View for Admin to add or update a menu item.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-        
         item_id = request.data.get('id')
         if item_id:
             try:
@@ -145,12 +143,9 @@ class AdminMenuDeleteView(APIView):
     """
     API View for Admin to delete a menu item.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def delete(self, request, pk):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-        
         try:
             menu_item = Menu.objects.get(pk=pk)
             menu_item.delete()
@@ -174,12 +169,9 @@ class AdminRebateStatusUpdateView(APIView):
     """
     API View for Admin to approve or reject rebate applications.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Unauthorized. Admin role required."}, status=status.HTTP_403_FORBIDDEN)
-        
         rebate_id = request.data.get('rebate_id')
         new_status = request.data.get('status') # Expecting 'approved' or 'rejected'
         note = request.data.get('note', '')
@@ -242,11 +234,9 @@ class AdminFeedbackStatusUpdateView(APIView):
     Admin-only: Update a feedback's status.
     Also sends a notification to the user.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
 
         feedback_id = request.data.get('id')
         new_status = request.data.get('status')  # 'pending', 'in_progress', 'resolved'
@@ -527,21 +517,29 @@ class CartCheckoutView(APIView):
     """
     API View to confirm booking from cart.
     Deducts available_count from Booking and creates MyBooking records.
+    Uses SELECT FOR UPDATE + atomic F() decrements to prevent overselling.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        cart_items = Cart.objects.filter(user=request.user)
-        if not cart_items.exists():
-            return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+        from django.db import transaction
+        from django.db.models import F
+        import uuid
 
         user_hall = request.user.hall_of_residence
         checkout_data = []
 
-        from django.db import transaction
-        import uuid
-
         with transaction.atomic():
+            # Lock the user's cart rows to prevent double-checkout
+            cart_items = (
+                Cart.objects
+                .select_for_update()
+                .filter(user=request.user)
+                .select_related('item')
+            )
+            if not cart_items.exists():
+                return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+
             # Generate ONE QR code for the entire checkout session
             unique_qr = f"QR-{uuid.uuid4().hex[:12].upper()}"
             qr_entry = QRDatabase.objects.create(
@@ -550,24 +548,43 @@ class CartCheckoutView(APIView):
             )
 
             for cart_item in cart_items:
-                # Lock the relevant bookings to prevent concurrent overselling
-                bookings = Booking.objects.select_for_update().filter(item=cart_item.item)
+                # Build the booking filter — prefer user's hall if available.
+                # All queries use select_for_update() so concurrent checkouts
+                # serialize on the same booking rows.
+                booking_qs = Booking.objects.select_for_update().filter(item=cart_item.item)
+
+                booking = None
                 if user_hall:
-                    hall_bookings = bookings.filter(hall=user_hall)
-                    if hall_bookings.exists():
-                        bookings = hall_bookings
-                
-                booking = bookings.filter(available_count__gte=cart_item.quantity).order_by('day_and_time').first()
+                    # Try hall-specific booking first (locked, with availability check)
+                    booking = (
+                        booking_qs
+                        .filter(hall=user_hall, available_count__gte=cart_item.quantity)
+                        .order_by('day_and_time')
+                        .first()
+                    )
 
                 if not booking:
-                    booking = bookings.order_by('day_and_time').first()
-                    if not booking or booking.available_count < cart_item.quantity:
-                        return Response({
-                            "error": f"Insufficient availability for {cart_item.item.name}. Please check cart again."
-                        }, status=status.HTTP_400_BAD_REQUEST)
+                    # Fall back to any hall with sufficient stock
+                    booking = (
+                        booking_qs
+                        .filter(available_count__gte=cart_item.quantity)
+                        .order_by('day_and_time')
+                        .first()
+                    )
 
-                booking.available_count -= cart_item.quantity
-                booking.save()
+                if not booking:
+                    # No booking has enough stock — abort the entire checkout.
+                    # transaction.atomic() will rollback all changes made so far.
+                    return Response({
+                        "error": f"Insufficient availability for {cart_item.item.name}. Please check cart again."
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                # Atomic decrement using F() — the DB enforces the arithmetic,
+                # so even under concurrent access the row lock from
+                # select_for_update prevents interleaving.
+                Booking.objects.filter(pk=booking.pk).update(
+                    available_count=F('available_count') - cart_item.quantity
+                )
 
                 my_booking = MyBooking.objects.create(
                     user=request.user,
@@ -590,6 +607,7 @@ class CartCheckoutView(APIView):
             "qr_code": unique_qr,
             "details": checkout_data
         }, status=status.HTTP_200_OK)
+
 
 
 class MessBillView(APIView):
@@ -719,7 +737,7 @@ class AdminBillingView(APIView):
     Admin-only API View to return billing data for ALL students.
     Used by the AdminBillingPage frontend.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def _get_rebate_days_for_month(self, user, month_str):
         import calendar
@@ -748,8 +766,6 @@ class AdminBillingView(APIView):
         return total_days
 
     def get(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
 
         target_month = request.query_params.get('month')
 
@@ -850,11 +866,9 @@ class AdminBillStatusUpdateView(APIView):
     Admin-only: Update a student's bill payment status for a given month.
     Also sends a notification to the student.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
 
         user_id = request.data.get('user_id')
         month = request.data.get('month')
@@ -917,11 +931,9 @@ class AdminSendReminderView(APIView):
     """
     Admin-only: Send a bill payment reminder notification to a student.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
 
         user_id = request.data.get('user_id')
         month = request.data.get('month')
@@ -1192,7 +1204,21 @@ class LoginView(APIView):
         serializer = LoginSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             data = serializer.validated_data
-            
+
+            # Blacklist any existing refresh token from the previous session
+            # to prevent old sessions from persisting across account switches
+            old_refresh = request.COOKIES.get('refresh_token')
+            if old_refresh:
+                try:
+                    from rest_framework_simplejwt.tokens import RefreshToken
+                    old_token = RefreshToken(old_refresh)
+                    old_token.blacklist()
+                except Exception:
+                    pass  # Token may already be invalid/blacklisted
+
+            cookie_secure = settings.SIMPLE_JWT.get('AUTH_COOKIE_SECURE', False)
+            cookie_samesite = settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax')
+
             response = Response({
                 "message": "Login successful.",
                 "user": data['user'],
@@ -1203,18 +1229,20 @@ class LoginView(APIView):
                 key=settings.SIMPLE_JWT.get('AUTH_COOKIE', 'access_token'),
                 value=data['access'],
                 expires=settings.SIMPLE_JWT.get('ACCESS_TOKEN_LIFETIME', 0),
-                secure=settings.SIMPLE_JWT.get('AUTH_COOKIE_SECURE', False),
+                secure=cookie_secure,
                 httponly=True,
-                samesite=settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax')
+                samesite=cookie_samesite,
+                path='/',
             )
-            # You can also set refresh token in cookie if needed, keeping it simple here
+            # Set the refresh token as an HttpOnly cookie
             response.set_cookie(
                 key="refresh_token",
                 value=data['refresh'],
                 expires=settings.SIMPLE_JWT.get('REFRESH_TOKEN_LIFETIME', 0),
-                secure=settings.SIMPLE_JWT.get('AUTH_COOKIE_SECURE', False),
+                secure=cookie_secure,
                 httponly=True,
-                samesite=settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax')
+                samesite=cookie_samesite,
+                path='/',
             )
             
             return response
@@ -1249,7 +1277,8 @@ class CustomTokenRefreshView(APIView):
                 expires=settings.SIMPLE_JWT.get('ACCESS_TOKEN_LIFETIME', 0),
                 secure=settings.SIMPLE_JWT.get('AUTH_COOKIE_SECURE', False),
                 httponly=True,
-                samesite=settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax')
+                samesite=settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax'),
+                path='/',
             )
 
             # If token rotation is enabled, simplejwt might also give a new refresh token.
@@ -1263,7 +1292,8 @@ class CustomTokenRefreshView(APIView):
                     expires=settings.SIMPLE_JWT.get('REFRESH_TOKEN_LIFETIME', 0),
                     secure=settings.SIMPLE_JWT.get('AUTH_COOKIE_SECURE', False),
                     httponly=True,
-                    samesite=settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax')
+                    samesite=settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax'),
+                    path='/',
                 )
 
             return response
@@ -1273,18 +1303,49 @@ class CustomTokenRefreshView(APIView):
 
 
 class LogoutView(APIView):
+    """
+    API View to handle user logout.
+    Blacklists the refresh token and clears both JWT cookies.
+    """
     def post(self, request):
+        # Blacklist the refresh token so it cannot be reused to mint new
+        # access tokens after logout (prevents session persistence)
+        refresh_token = request.COOKIES.get('refresh_token')
+        if refresh_token:
+            try:
+                from rest_framework_simplejwt.tokens import RefreshToken
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+            except Exception:
+                pass  # Token may already be invalid/expired/blacklisted
+
+        cookie_samesite = settings.SIMPLE_JWT.get('AUTH_COOKIE_SAMESITE', 'Lax')
+
         response = Response({"message": "Successfully logged out."}, status=status.HTTP_200_OK)
-        response.delete_cookie(settings.SIMPLE_JWT.get('AUTH_COOKIE', 'access_token'))
-        response.delete_cookie("refresh_token")
+        response.delete_cookie(
+            key=settings.SIMPLE_JWT.get('AUTH_COOKIE', 'access_token'),
+            path='/',
+            samesite=cookie_samesite,
+        )
+        response.delete_cookie(
+            key="refresh_token",
+            path='/',
+            samesite=cookie_samesite,
+        )
         return response
 
 
 class DailyRebateRefundListView(APIView):
     """
     API View to list and create/update Daily Rebate Refunds.
+    GET: Any authenticated user.
+    POST: Admin only.
     """
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAdminRole()]
+        return [IsAuthenticated()]
 
     def get(self, request):
         rebates = DailyRebateRefund.objects.all().order_by('month')
@@ -1292,9 +1353,6 @@ class DailyRebateRefundListView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-        
         month = request.data.get('month')
         cost = request.data.get('cost')
         
@@ -1315,8 +1373,14 @@ class DailyRebateRefundListView(APIView):
 class FixedChargesListView(APIView):
     """
     API View to list Fixed Charges.
+    GET: Any authenticated user (students see own, admins see all).
+    POST: Admin only.
     """
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAdminRole()]
+        return [IsAuthenticated()]
 
     def get(self, request):
         if getattr(request.user, 'role', '') == 'admin':
@@ -1328,9 +1392,6 @@ class FixedChargesListView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-        
         serializer = FixedChargesSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -1453,11 +1514,9 @@ class AdminExtrasDashboardView(APIView):
     """
     Admin-only: Get all hall menus and recent orders for Extras Management.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def get(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
 
         # 1. Get Menus (Items with Bookings)
         halls = Hall.objects.all()
@@ -1517,12 +1576,9 @@ class AdminExtrasItemView(APIView):
     """
     Admin-only: Add, edit, or delete an extra Item.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-            
         name = request.data.get('name')
         price = request.data.get('price')
         stock = request.data.get('stock')
@@ -1542,9 +1598,6 @@ class AdminExtrasItemView(APIView):
         return Response({"message": "Item created"}, status=status.HTTP_201_CREATED)
 
     def put(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-            
         item_id = request.data.get('id')
         name = request.data.get('name')
         price = request.data.get('price')
@@ -1571,9 +1624,6 @@ class AdminExtrasItemView(APIView):
             return Response({"error": "Item not found"}, status=status.HTTP_404_NOT_FOUND)
 
     def delete(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-            
         item_id = request.data.get('id')
         try:
             item = Item.objects.get(id=item_id)
@@ -1583,14 +1633,21 @@ class AdminExtrasItemView(APIView):
             return Response({"error": "Item not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
+@dataclass
+class AdminNotificationPayload:
+    title: str
+    content: str
+    all_students: bool = False
+    user_ids: list = None
+    emails: list = None
+    roll_nos: list = None
+
+
 class AdminSendNotificationView(APIView):
     """Admin-only: Send custom notifications to a student or multiple students."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-
         payload = AdminNotificationPayload(
             title=request.data.get('title', '').strip(),
             content=request.data.get('content', '').strip(),
@@ -1653,107 +1710,26 @@ class AdminSendNotificationView(APIView):
 
 class AdminStudentListView(APIView):
     """Admin-only: Get student list for targeted notifications."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def get(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-
         from .models import CustomUser
         students = CustomUser.objects.filter(role='student').order_by('name')
         serializer = UserProfileSerializer(students, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-@dataclass
-class AdminNotificationPayload:
-    title: str
-    content: str
-    all_students: bool = False
-    user_ids: list = None
-    emails: list = None
-    roll_nos: list = None
-
-
-class AdminSendNotificationView(APIView):
-    """Admin-only: Send custom notifications to a student or multiple students."""
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
-
-        payload = AdminNotificationPayload(
-            title=request.data.get('title', '').strip(),
-            content=request.data.get('content', '').strip(),
-            all_students=request.data.get('all_students', False),
-            user_ids=request.data.get('user_ids', []),
-            emails=request.data.get('emails', []),
-            roll_nos=request.data.get('roll_nos', []),
-        )
-
-        if not payload.title or not payload.content:
-            return Response({"error": "Title and content are required."}, status=status.HTTP_400_BAD_REQUEST)
-
-        from .models import CustomUser
-
-        targets = CustomUser.objects.filter(role='student')
-
-        if not payload.all_students:
-            if payload.user_ids and not isinstance(payload.user_ids, list):
-                return Response({"error": "user_ids must be a list."}, status=status.HTTP_400_BAD_REQUEST)
-            if payload.emails and isinstance(payload.emails, str):
-                payload.emails = [email.strip() for email in payload.emails.split(',') if email.strip()]
-            if payload.roll_nos and isinstance(payload.roll_nos, str):
-                payload.roll_nos = [roll.strip() for roll in payload.roll_nos.split(',') if roll.strip()]
-
-            if payload.emails and not isinstance(payload.emails, list):
-                return Response({"error": "emails must be a list or comma-separated string."}, status=status.HTTP_400_BAD_REQUEST)
-            if payload.roll_nos and not isinstance(payload.roll_nos, list):
-                return Response({"error": "roll_nos must be a list or comma-separated string."}, status=status.HTTP_400_BAD_REQUEST)
-
-            if not (payload.user_ids or payload.emails or payload.roll_nos):
-                return Response({"error": "Must provide all_students:true or at least one of user_ids / emails / roll_nos."}, status=status.HTTP_400_BAD_REQUEST)
-
-            q = CustomUser.objects.filter(role='student')
-            if payload.user_ids:
-                q = q.filter(id__in=payload.user_ids)
-            if payload.emails:
-                q = q.filter(email__in=payload.emails)
-            if payload.roll_nos:
-                q = q.filter(roll_no__in=payload.roll_nos)
-
-            targets = q
-
-        created = 0
-        for student in targets.distinct():
-            Notification.objects.create(
-                user=student,
-                title=payload.title,
-                content=payload.content,
-                category='unseen'
-            )
-            created += 1
-
-        if created == 0:
-            return Response({"error": "No matching student recipients found."}, status=status.HTTP_404_NOT_FOUND)
-
-        return Response({
-            "message": f"Notification sent to {created} student(s).",
-            "sent_count": created
-        }, status=status.HTTP_200_OK)
-
 
 class AdminQRScanView(APIView):
     """
     Admin-only: Scan a QR code to mark all associated bookings as 'confirmed-scanned'.
+    Returns 409 Conflict if the QR has already been scanned.
     Expected payload: {"qr_code": "QR-XXXXXXXXXXXX"}
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminRole]
 
     def post(self, request):
-        if getattr(request.user, 'role', '') != 'admin':
-            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+        from django.db import transaction
 
         qr_code = request.data.get('qr_code', '').strip()
         if not qr_code:
@@ -1764,64 +1740,68 @@ class AdminQRScanView(APIView):
         except QRDatabase.DoesNotExist:
             return Response({"error": "Invalid QR code. No matching record found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Get all bookings linked to this QR
-        my_bookings = (
-            MyBooking.objects
-            .filter(qr_code=qr_entry)
-            .select_related('booking__item', 'booking__hall', 'user')
-        )
+        with transaction.atomic():
+            # Lock the booking rows linked to this QR to prevent
+            # two simultaneous scan requests from both succeeding
+            my_bookings = (
+                MyBooking.objects
+                .select_for_update()
+                .filter(qr_code=qr_entry)
+                .select_related('booking__item', 'booking__hall', 'user')
+            )
 
-        if not my_bookings.exists():
-            return Response({"error": "No bookings found for this QR code."}, status=status.HTTP_404_NOT_FOUND)
+            if not my_bookings.exists():
+                return Response({"error": "No bookings found for this QR code."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Check if already scanned
-        unscanned = my_bookings.filter(status='confirmed-not-scanned')
-        already_scanned = not unscanned.exists()
+            # Atomically update ONLY rows that are still unscanned.
+            # If another request already flipped them, scanned_count will be 0.
+            scanned_count = (
+                MyBooking.objects
+                .filter(qr_code=qr_entry, status='confirmed-not-scanned')
+                .update(status='confirmed-scanned')
+            )
 
-        if already_scanned:
-            # Still return details, but inform that it's already scanned
+            if scanned_count == 0:
+                # Already scanned — reject with 409 Conflict
+                first = my_bookings.first()
+                items = []
+                for mb in my_bookings:
+                    items.append({
+                        "item_name": mb.booking.item.name,
+                        "quantity": mb.quantity,
+                        "cost": float(mb.booking.item.cost * mb.quantity),
+                        "hall": mb.booking.hall.name if mb.booking.hall else "",
+                    })
+                return Response({
+                    "status": "already_scanned",
+                    "message": "This QR code has already been scanned.",
+                    "student": {
+                        "name": first.user.name,
+                        "email": first.user.email,
+                        "roll_no": first.user.roll_no,
+                    },
+                    "items": items,
+                }, status=status.HTTP_409_CONFLICT)
+
+            # First scan — success
             first = my_bookings.first()
             items = []
+            total_cost = 0
             for mb in my_bookings:
+                item_cost = float(mb.booking.item.cost * mb.quantity)
                 items.append({
                     "item_name": mb.booking.item.name,
                     "quantity": mb.quantity,
-                    "cost": float(mb.booking.item.cost * mb.quantity),
+                    "cost": item_cost,
                     "hall": mb.booking.hall.name if mb.booking.hall else "",
                 })
-            return Response({
-                "status": "already_scanned",
-                "message": "This QR code has already been scanned.",
-                "student": {
-                    "name": first.user.name,
-                    "email": first.user.email,
-                    "roll_no": first.user.roll_no,
-                },
-                "items": items,
-                "scanned_at": first.booked_at,
-            }, status=status.HTTP_200_OK)
+                total_cost += item_cost
 
-        # Mark all unscanned bookings as scanned
-        scanned_count = unscanned.update(status='confirmed-scanned')
-
-        first = my_bookings.first()
-        items = []
-        total_cost = 0
-        for mb in my_bookings:
-            item_cost = float(mb.booking.item.cost * mb.quantity)
-            items.append({
-                "item_name": mb.booking.item.name,
-                "quantity": mb.quantity,
-                "cost": item_cost,
-                "hall": mb.booking.hall.name if mb.booking.hall else "",
-            })
-            total_cost += item_cost
-
-        # Send notification to the student
+        # Send notification to the student (outside transaction for performance)
         Notification.objects.create(
             user=first.user,
             title="Order Collected",
-            content=f"Your order ({scanned_count} item(s), ₹{total_cost:.0f}) has been collected at the mess counter.",
+            content=f"Your order ({scanned_count} item(s), \u20b9{total_cost:.0f}) has been collected at the mess counter.",
             category='unseen'
         )
 
